@@ -82,7 +82,7 @@ jobs:
       - name: Create empty .env for Docker build
         if: ${{ inputs.scan_docker }}
         run: |
-          touch .env      
+          echo "# dummy env for build" > .env 
 
       # ✅ Docker Image Build for Scan (local)
       - name: Set up Docker Buildx
