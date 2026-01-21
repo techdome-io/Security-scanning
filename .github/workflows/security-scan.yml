@@ -13,18 +13,10 @@ on:
         type: boolean
         default: true
 
+      # Docker image scanning
       scan_docker:
         type: boolean
         default: false
-      registry:
-        type: string
-        required: false
-      image_name:
-        type: string
-        required: false
-      image_tag:
-        type: string
-        required: false
 
 permissions:
   contents: read
@@ -56,6 +48,7 @@ jobs:
         run: |
           curl -L -o html.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
 
+      # ✅ FS Scan
       - name: Trivy FS Scan (HTML)
         if: ${{ inputs.scan_fs }}
         run: |
@@ -65,6 +58,7 @@ jobs:
             --template "@html.tpl" \
             -o trivy-fs-report.html
 
+      # ✅ IaC Scan
       - name: Trivy IaC Scan (HTML)
         if: ${{ inputs.scan_iac }}
         run: |
@@ -74,6 +68,7 @@ jobs:
             --template "@html.tpl" \
             -o trivy-iac-report.html
 
+      # ✅ Secrets Scan
       - name: Trivy Secrets Scan (HTML)
         if: ${{ inputs.scan_secrets }}
         run: |
@@ -84,22 +79,39 @@ jobs:
             --template "@html.tpl" \
             -o trivy-secrets-report.html
 
+      # ✅ Docker Image Build for Scan (local)
+      - name: Set up Docker Buildx
+        if: ${{ inputs.scan_docker }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image locally for scanning (no push)
+        if: ${{ inputs.scan_docker }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: local-scan:${{ github.run_number }}
+
+      # ✅ Docker Image Scan
       - name: Trivy Docker Image Scan (HTML)
-        if: ${{ inputs.scan_docker && inputs.registry != '' && inputs.image_name != '' && inputs.image_tag != '' }}
+        if: ${{ inputs.scan_docker }}
         run: |
-          trivy image ${{ inputs.registry }}/${{ inputs.image_name }}:${{ inputs.image_tag }} \
+          trivy image local-scan:${{ github.run_number }} \
             --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
             --format template \
             --template "@html.tpl" \
             -o trivy-image-report.html
 
+      # ✅ Block only on CRITICAL
       - name: Trivy Block (fail only on CRITICAL)
-        if: ${{ inputs.scan_docker && inputs.registry != '' && inputs.image_name != '' && inputs.image_tag != '' }}
+        if: ${{ inputs.scan_docker }}
         run: |
-          trivy image ${{ inputs.registry }}/${{ inputs.image_name }}:${{ inputs.image_tag }} \
+          trivy image local-scan:${{ github.run_number }} \
             --severity CRITICAL \
             --exit-code 1
 
+      # ✅ Upload reports
       - name: Upload Security Reports (Artifacts)
         uses: actions/upload-artifact@v4
         with:
