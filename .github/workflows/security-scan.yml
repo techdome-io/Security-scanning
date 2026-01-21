@@ -1,0 +1,108 @@
+name: Reusable Security Scan (Trivy)
+
+on:
+  workflow_call:
+    inputs:
+      scan_fs:
+        type: boolean
+        default: true
+      scan_iac:
+        type: boolean
+        default: true
+      scan_secrets:
+        type: boolean
+        default: true
+
+      scan_docker:
+        type: boolean
+        default: false
+      registry:
+        type: string
+        required: false
+      image_name:
+        type: string
+        required: false
+      image_tag:
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/trivy
+          key: trivy-db-${{ runner.os }}
+
+      - name: Install Trivy CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget curl gnupg lsb-release
+          wget -qO- https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Download Trivy HTML template
+        run: |
+          curl -L -o html.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
+
+      - name: Trivy FS Scan (HTML)
+        if: ${{ inputs.scan_fs }}
+        run: |
+          trivy fs . \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format template \
+            --template "@html.tpl" \
+            -o trivy-fs-report.html
+
+      - name: Trivy IaC Scan (HTML)
+        if: ${{ inputs.scan_iac }}
+        run: |
+          trivy config . \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format template \
+            --template "@html.tpl" \
+            -o trivy-iac-report.html
+
+      - name: Trivy Secrets Scan (HTML)
+        if: ${{ inputs.scan_secrets }}
+        run: |
+          trivy fs . \
+            --scanners secret \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format template \
+            --template "@html.tpl" \
+            -o trivy-secrets-report.html
+
+      - name: Trivy Docker Image Scan (HTML)
+        if: ${{ inputs.scan_docker && inputs.registry != '' && inputs.image_name != '' && inputs.image_tag != '' }}
+        run: |
+          trivy image ${{ inputs.registry }}/${{ inputs.image_name }}:${{ inputs.image_tag }} \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format template \
+            --template "@html.tpl" \
+            -o trivy-image-report.html
+
+      - name: Trivy Block (fail only on CRITICAL)
+        if: ${{ inputs.scan_docker && inputs.registry != '' && inputs.image_name != '' && inputs.image_tag != '' }}
+        run: |
+          trivy image ${{ inputs.registry }}/${{ inputs.image_name }}:${{ inputs.image_tag }} \
+            --severity CRITICAL \
+            --exit-code 1
+
+      - name: Upload Security Reports (Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports-${{ github.run_number }}
+          path: |
+            trivy-*-report.html
