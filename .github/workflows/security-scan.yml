@@ -3,6 +3,9 @@ name: Reusable Security Scan (Trivy)
 on:
   workflow_call:
     inputs:
+      application_name:
+        required: true
+        type: string
       scan_fs:
         type: boolean
         default: true
@@ -148,3 +151,4 @@ jobs:
           name: security-reports-${{ github.run_number }}
           path: |
             trivy-*-report.html
+      # ─────────────────────────────────────────────      
