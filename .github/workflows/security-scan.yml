@@ -12,6 +12,9 @@ on:
       scan_secrets:
         type: boolean
         default: true
+      scan_deps:
+        type: boolean
+        default: true
 
       # Docker image scanning
       scan_docker:
@@ -47,6 +50,28 @@ jobs:
       - name: Download Trivy HTML template
         run: |
           curl -L -o html.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
+
+      # ✅ Dependency (SCA) Scan (HTML)
+      - name: Trivy Dependency Scan (HTML)
+        if: ${{ inputs.scan_deps }}
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format template \
+            --template "@html.tpl" \
+            -o trivy-deps-report.html
+
+      # ✅ Block only if CRITICAL dependency vulnerability found
+      - name: Trivy Dependency Block (CRITICAL only)
+        if: ${{ inputs.scan_deps }}
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --severity CRITICAL \
+            --exit-code 1      
 
       # ✅ FS Scan
       - name: Trivy FS Scan (HTML)
