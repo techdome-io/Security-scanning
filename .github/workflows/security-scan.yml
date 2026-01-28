@@ -18,8 +18,6 @@ on:
       scan_deps:
         type: boolean
         default: true
-
-      # Docker image scanning
       scan_docker:
         type: boolean
         default: false
@@ -35,26 +33,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ─────────────────────────────────────────────
+      # Cache Trivy DB
       - name: Cache Trivy DB
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/trivy
           key: trivy-db-${{ runner.os }}
 
-      - name: Install Trivy CLI
+      # ─────────────────────────────────────────────
+      # Install tools
+      - name: Install Trivy & jq
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget curl gnupg lsb-release
+          sudo apt-get install -y wget curl gnupg lsb-release jq
           wget -qO- https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update
           sudo apt-get install -y trivy
 
       - name: Download Trivy HTML template
         run: |
-          curl -L -o html.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
+          curl -L -o html.tpl \
+          https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
 
-      # ✅ Dependency (SCA) Scan (HTML)
+      # ─────────────────────────────────────────────
+      # Dependency Scan (HTML)
       - name: Trivy Dependency Scan (HTML)
         if: ${{ inputs.scan_deps }}
         run: |
@@ -66,17 +71,29 @@ jobs:
             --template "@html.tpl" \
             -o trivy-deps-report.html
 
-      # ✅ Block only if CRITICAL dependency vulnerability found
-      - name: Trivy Dependency Block (CRITICAL only)
+      # Dependency Scan (JSON → used for counts)
+      - name: Trivy Dependency Scan (JSON)
+        if: ${{ inputs.scan_deps }}
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json \
+            -o trivy-report.json
+
+      # Block only if CRITICAL dependency found
+      - name: Trivy Dependency Block (CRITICAL)
         if: ${{ inputs.scan_deps }}
         run: |
           trivy fs . \
             --scanners vuln \
             --vuln-type library \
             --severity CRITICAL \
-            --exit-code 1      
+            --exit-code 1
 
-      # ✅ FS Scan
+      # ─────────────────────────────────────────────
+      # FS Scan
       - name: Trivy FS Scan (HTML)
         if: ${{ inputs.scan_fs }}
         run: |
@@ -86,7 +103,7 @@ jobs:
             --template "@html.tpl" \
             -o trivy-fs-report.html
 
-      # ✅ IaC Scan
+      # IaC Scan
       - name: Trivy IaC Scan (HTML)
         if: ${{ inputs.scan_iac }}
         run: |
@@ -96,7 +113,7 @@ jobs:
             --template "@html.tpl" \
             -o trivy-iac-report.html
 
-      # ✅ Secrets Scan
+      # Secrets Scan
       - name: Trivy Secrets Scan (HTML)
         if: ${{ inputs.scan_secrets }}
         run: |
@@ -107,17 +124,17 @@ jobs:
             --template "@html.tpl" \
             -o trivy-secrets-report.html
 
-      - name: Create empty .env for Docker build
+      # ─────────────────────────────────────────────
+      # Docker Scan
+      - name: Create empty .env
         if: ${{ inputs.scan_docker }}
-        run: |
-          echo "# dummy env for build" > .env 
+        run: echo "# dummy env" > .env
 
-      # ✅ Docker Image Build for Scan (local)
       - name: Set up Docker Buildx
         if: ${{ inputs.scan_docker }}
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image locally for scanning (no push)
+      - name: Build image locally for scan
         if: ${{ inputs.scan_docker }}
         uses: docker/build-push-action@v5
         with:
@@ -126,7 +143,6 @@ jobs:
           load: true
           tags: local-scan:${{ github.run_number }}
 
-      # ✅ Docker Image Scan
       - name: Trivy Docker Image Scan (HTML)
         if: ${{ inputs.scan_docker }}
         run: |
@@ -136,19 +152,107 @@ jobs:
             --template "@html.tpl" \
             -o trivy-image-report.html
 
-      # ✅ Block only on CRITICAL
-      - name: Trivy Block (fail only on CRITICAL)
+      - name: Trivy Docker Block (CRITICAL)
         if: ${{ inputs.scan_docker }}
         run: |
           trivy image local-scan:${{ github.run_number }} \
             --severity CRITICAL \
             --exit-code 1
 
-      # ✅ Upload reports
-      - name: Upload Security Reports (Artifacts)
+      # ─────────────────────────────────────────────
+      # Extract vulnerability counts (for Teams)
+      - name: Extract vulnerability counts
+        if: failure()
+        run: |
+          CRITICAL=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-report.json)
+          HIGH=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-report.json)
+          MEDIUM=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' trivy-report.json)
+          LOW=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="LOW")] | length' trivy-report.json)
+
+          echo "CRITICAL=$CRITICAL" >> $GITHUB_ENV
+          echo "HIGH=$HIGH" >> $GITHUB_ENV
+          echo "MEDIUM=$MEDIUM" >> $GITHUB_ENV
+          echo "LOW=$LOW" >> $GITHUB_ENV
+
+      # ─────────────────────────────────────────────
+      # Upload reports
+      - name: Upload Security Reports
         uses: actions/upload-artifact@v4
         with:
           name: security-reports-${{ github.run_number }}
           path: |
             trivy-*-report.html
-      # ─────────────────────────────────────────────      
+
+      # ─────────────────────────────────────────────
+      # Teams Notification
+      - name: Notify Teams (Security Scan Failed)
+        if: failure()
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          payload=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg run_number "$GITHUB_RUN_NUMBER" \
+            --arg critical "$CRITICAL" \
+            --arg high "$HIGH" \
+            --arg medium "$MEDIUM" \
+            --arg low "$LOW" \
+            --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{
+              "type": "message",
+              "attachments": [
+                {
+                  "contentType": "application/vnd.microsoft.card.adaptive",
+                  "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.5",
+                    "body": [
+                      {
+                        "type": "TextBlock",
+                        "text": "🚨 Security Scan Failed",
+                        "weight": "Bolder",
+                        "size": "Large",
+                        "color": "Attention"
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          { "title": "Repository", "value": $repo },
+                          { "title": "Branch", "value": $branch },
+                          { "title": "Workflow", "value": $workflow },
+                          { "title": "Run #", "value": $run_number }
+                        ]
+                      },
+                      {
+                        "type": "TextBlock",
+                        "text": "📊 Vulnerability Summary",
+                        "weight": "Bolder"
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          { "title": "CRITICAL", "value": $critical },
+                          { "title": "HIGH", "value": $high },
+                          { "title": "MEDIUM", "value": $medium },
+                          { "title": "LOW", "value": $low }
+                        ]
+                      }
+                    ],
+                    "actions": [
+                      {
+                        "type": "Action.OpenUrl",
+                        "title": "🔗 Open GitHub Run",
+                        "url": $url
+                      }
+                    ]
+                  }
+                }
+              ]
+            }')
+
+          curl -H "Content-Type: application/json" \
+               -d "$payload" \
+               "$TEAMS_WEBHOOK_URL"
